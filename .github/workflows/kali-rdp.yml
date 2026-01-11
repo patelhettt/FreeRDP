@@ -24,17 +24,15 @@ jobs:
           swap-storage: true
 
       # ----------------------------
-      # Install Docker
+      # Verify Docker (already installed on runners)
       # ----------------------------
-      - name: Install Docker
+      - name: Verify Docker
         run: |
-          sudo apt-get update
-          sudo apt-get install -y docker.io
-          sudo systemctl start docker
-          sudo systemctl enable docker
+          docker --version
+          docker info
 
       # ----------------------------
-      # Generate RDP password
+      # Generate password
       # ----------------------------
       - name: Generate credentials
         run: |
@@ -81,7 +79,7 @@ jobs:
             kali-rdp
 
       # ----------------------------
-      # Set password inside container
+      # Set password in container
       # ----------------------------
       - name: Set RDP password
         run: |
