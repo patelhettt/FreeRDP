@@ -6,10 +6,13 @@ on:
 jobs:
   kali-rdp:
     runs-on: ubuntu-latest
-    timeout-minutes: 240  # 4 hours - safer than 6h
+    timeout-minutes: 240
 
     steps:
-      - name: Maximize disk space (VERY important!)
+      # ----------------------------
+      # Free disk space
+      # ----------------------------
+      - name: Maximize disk space
         uses: jlumbroso/free-disk-space@main
         with:
           large-packages: true
@@ -20,70 +23,100 @@ jobs:
           docker-images: true
           swap-storage: true
 
-      - name: Add Kali Repositories Correctly
+      # ----------------------------
+      # Add Kali repo
+      # ----------------------------
+      - name: Add Kali repositories
         run: |
           sudo apt-get update
-          wget -q -O - https://archive.kali.org/archive-key.asc | gpg --dearmor | sudo tee /usr/share/keyrings/kali-archive-keyring.gpg >/dev/null
-          echo "deb [signed-by=/usr/share/keyrings/kali-archive-keyring.gpg] http://http.kali.org/kali kali-rolling main non-free contrib" | sudo tee /etc/apt/sources.list.d/kali.list
+          wget -q -O - https://archive.kali.org/archive-key.asc \
+            | gpg --dearmor \
+            | sudo tee /usr/share/keyrings/kali-archive-keyring.gpg >/dev/null
+          echo "deb [signed-by=/usr/share/keyrings/kali-archive-keyring.gpg] http://http.kali.org/kali kali-rolling main non-free contrib" \
+            | sudo tee /etc/apt/sources.list.d/kali.list
           sudo apt-get update
 
-      - name: Install XFCE + xRDP + Light Kali Tools
+      # ----------------------------
+      # Create RDP user FIRST
+      # ----------------------------
+      - name: Create RDP user
+        run: |
+          PASSWORD=$(openssl rand -base64 12 | tr -dc 'A-Za-z0-9!@#$%^&*()_+' | head -c 16)
+
+          sudo adduser --gecos "" --disabled-password kaliuser
+          echo "kaliuser:$PASSWORD" | sudo chpasswd
+          sudo usermod -aG sudo kaliuser
+
+          # Mask password so it never appears in logs
+          echo "::add-mask::$PASSWORD"
+
+          echo "RDP_USER=kaliuser" >> $GITHUB_ENV
+          echo "RDP_PASS=$PASSWORD" >> $GITHUB_ENV
+
+      # ----------------------------
+      # Install desktop + tools
+      # ----------------------------
+      - name: Install XFCE + xRDP + Kali tools
         run: |
           sudo DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
             xfce4 xfce4-goodies xorg dbus-x11 x11-xserver-utils \
             xrdp \
             kali-linux-headless \
-            metasploit-framework nmap wireshark aircrack-ng hashcat john burpsuite
-          # Configure xRDP for XFCE
-          echo "xfce4-session" | sudo tee -a /etc/xrdp/startwm.sh
-          sudo chmod +x /etc/xrdp/startwm.sh
+            metasploit-framework nmap hashcat john burpsuite aircrack-ng
+
+          # Set XFCE as default session for xRDP
+          sudo sed -i 's@^exec .*@exec startxfce4@' /etc/xrdp/startwm.sh
+
+          # Cursor fix (harmless if option missing)
           sudo sed -i 's/^new_cursors=true/new_cursors=false/' /etc/xrdp/xrdp.ini || true
-          # Common fix for session/login issues (create user-specific xsession)
-          echo "startxfce4" > /tmp/.xsession
-          sudo mv /tmp/.xsession /home/kaliuser/.xsession
+
+          # User session file
+          echo "startxfce4" | sudo tee /home/kaliuser/.xsession
           sudo chown kaliuser:kaliuser /home/kaliuser/.xsession
           sudo chmod +x /home/kaliuser/.xsession
-          # Ensure services are enabled and started
-          sudo systemctl enable xrdp xrdp-sesman || true
-          sudo systemctl restart xrdp xrdp-sesman || true
-          # Output status for debugging (visible in logs)
-          sudo systemctl status xrdp xrdp-sesman --no-pager || echo "Service status check completed"
 
-      - name: Create RDP User
-        run: |
-          PASSWORD=$(openssl rand -base64 12 | tr -dc 'A-Za-z0-9!@#$%^&*()_+' | head -c 16)
-          sudo adduser --gecos "" --disabled-password kaliuser
-          echo "kaliuser:$PASSWORD" | sudo chpasswd
-          sudo usermod -aG sudo kaliuser
-          echo "RDP_USER=kaliuser" >> $GITHUB_ENV
-          echo "RDP_PASS=$PASSWORD" >> $GITHUB_ENV
-          echo "RDP_CREDS=User: kaliuser | Password: $PASSWORD" >> $GITHUB_ENV
+          # Enable services
+          sudo systemctl enable xrdp xrdp-sesman
+          sudo systemctl restart xrdp xrdp-sesman
+          sudo systemctl status xrdp xrdp-sesman --no-pager || true
 
+      # ----------------------------
+      # Connect to Tailscale
+      # ----------------------------
       - name: Connect to Tailscale
         uses: tailscale/github-action@v4
         with:
           oauth-client-id: ${{ secrets.TS_OAUTH_CLIENT_ID }}
           oauth-secret: ${{ secrets.TS_OAUTH_SECRET }}
           tags: tag:github-kali
-          args: --hostname=gh-kali-${{ github.run_id }} --accept-routes
-          # Optional: ping: 100.x.y.z   (your known device IP to wait for full connectivity)
+          args: --hostname=gh-kali-${{ github.run_id }}
 
-      - name: Get Tailscale IP & Verify
+      # ----------------------------
+      # Get IP + verify RDP
+      # ----------------------------
+      - name: Get Tailscale IP & verify
         run: |
           TS_IP=$(tailscale ip -4)
           echo "TAILSCALE_IP=$TS_IP" >> $GITHUB_ENV
           echo "Tailscale IP: $TS_IP"
-          sudo netstat -tuln | grep 3389 || echo "Warning: port 3389 not listening!"
 
-      - name: Show Connection Details & Keep Alive
+          sudo ss -tuln | grep 3389 || echo "Warning: RDP not listening yet"
+
+      # ----------------------------
+      # Show info + keep alive
+      # ----------------------------
+      - name: Show connection details
         run: |
           echo ""
-          echo "=== KALI-LIKE RDP ACCESS (Temporary GitHub Runner) ==="
-          echo "Address: ${{ env.TAILSCALE_IP }}  (or MagicDNS: gh-kali-${{ github.run_id }}.<your-tailnet>.ts.net)"
+          echo "=== KALI RDP ACCESS ==="
+          echo "Address : ${{ env.TAILSCALE_IP }}"
           echo "Username: ${{ env.RDP_USER }}"
-          echo "Password: ${{ env.RDP_PASS }}"
-          echo "Session: XFCE - may take 10-20s extra on first connect"
-          echo "Tools: nmap, metasploit, wireshark, hashcat, john, burp, aircrack-ng..."
-          echo "WARNING: Ephemeral - data lost on cancel/timeout!"
+          echo "Password: (hidden in logs)"
+          echo "Desktop : XFCE"
+          echo "======================"
           echo ""
-          while true; do echo "[$(date)] Session active - Cancel workflow to stop"; sleep 300; done
+
+          while true; do
+            echo "[$(date)] Session active"
+            sleep 300
+          done
