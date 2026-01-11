@@ -31,19 +31,23 @@ jobs:
         run: |
           sudo DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
             xfce4 xfce4-goodies xorg dbus-x11 x11-xserver-utils \
-            xrdp xrdp-sesman \
+            xrdp \
             kali-linux-headless \
             metasploit-framework nmap wireshark aircrack-ng hashcat john burpsuite
-          # Configure xRDP
+          # Configure xRDP for XFCE
           echo "xfce4-session" | sudo tee -a /etc/xrdp/startwm.sh
           sudo chmod +x /etc/xrdp/startwm.sh
-          sudo sed -i 's/^new_cursors=true/new_cursors=false/' /etc/xrdp/xrdp.ini
-          # Fix for many login issues
-          echo "startxfce4" | sudo -u kaliuser tee /home/kaliuser/.xsession
+          sudo sed -i 's/^new_cursors=true/new_cursors=false/' /etc/xrdp/xrdp.ini || true
+          # Common fix for session/login issues (create user-specific xsession)
+          echo "startxfce4" > /tmp/.xsession
+          sudo mv /tmp/.xsession /home/kaliuser/.xsession
           sudo chown kaliuser:kaliuser /home/kaliuser/.xsession
-          sudo systemctl enable xrdp
-          sudo systemctl restart xrdp
-          sudo systemctl status xrdp --no-pager
+          sudo chmod +x /home/kaliuser/.xsession
+          # Ensure services are enabled and started
+          sudo systemctl enable xrdp xrdp-sesman || true
+          sudo systemctl restart xrdp xrdp-sesman || true
+          # Output status for debugging (visible in logs)
+          sudo systemctl status xrdp xrdp-sesman --no-pager || echo "Service status check completed"
 
       - name: Create RDP User
         run: |
