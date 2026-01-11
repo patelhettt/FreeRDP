@@ -18,7 +18,6 @@ jobs:
           sudo DEBIAN_FRONTEND=noninteractive apt-get install -y \
             xrdp xfce4 xfce4-goodies dbus-x11 xorg
 
-          # Set XFCE as default session for xRDP
           sudo sed -i 's@^exec .*@exec startxfce4@' /etc/xrdp/startwm.sh
           sudo sed -i 's/^new_cursors=true/new_cursors=false/' /etc/xrdp/xrdp.ini || true
 
@@ -26,11 +25,10 @@ jobs:
           sudo systemctl restart xrdp
 
       # ----------------------------
-      # Create RDP user (same logic, Linux)
+      # Create RDP user (PASSWORD WILL BE SHOWN)
       # ----------------------------
       - name: Create RDP User
         run: |
-          # Same idea as your Windows script: strong random password
           CHARS='ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz23456789!@#$%^&*'
           PASSWORD=$(echo "$CHARS" | fold -w1 | shuf | head -n16 | tr -d '\n')
 
@@ -38,16 +36,22 @@ jobs:
           echo "RDP:$PASSWORD" | sudo chpasswd
           sudo usermod -aG sudo RDP
 
-          # Mask password in logs (same behavior as before)
-          echo "::add-mask::$PASSWORD"
-
           echo "RDP_USER=RDP" >> $GITHUB_ENV
           echo "RDP_PASS=$PASSWORD" >> $GITHUB_ENV
 
-          # User session file for xRDP
           echo "startxfce4" | sudo tee /home/RDP/.xsession
           sudo chown RDP:RDP /home/RDP/.xsession
           sudo chmod +x /home/RDP/.xsession
+
+          # 🔥 SHOW PASSWORD ONCE
+          echo ""
+          echo "=============================="
+          echo " RDP PASSWORD (SAVE THIS) "
+          echo "=============================="
+          echo "Username: RDP"
+          echo "Password: $PASSWORD"
+          echo "=============================="
+          echo ""
 
       # ----------------------------
       # Install Tailscale
@@ -65,7 +69,6 @@ jobs:
             --authkey=${{ secrets.TAILSCALE_AUTH_KEY }} \
             --hostname=gh-linux-${{ github.run_id }}
 
-          # Wait for IP
           TS_IP=""
           for i in {1..10}; do
             TS_IP=$(tailscale ip -4)
@@ -93,7 +96,7 @@ jobs:
           fi
 
       # ----------------------------
-      # Show access info (NO password leak)
+      # Show access info
       # ----------------------------
       - name: Show connection info
         run: |
@@ -101,11 +104,10 @@ jobs:
           echo "===== LINUX RDP READY ====="
           echo "Address : $TAILSCALE_IP"
           echo "Username: $RDP_USER"
-          echo "Password: (hidden in logs)"
+          echo "Password: $RDP_PASS"
           echo "=========================="
           echo ""
 
-          # Keep alive for 1 hour max
           for i in {1..12}; do
             echo "[$(date)] RDP active"
             sleep 300
