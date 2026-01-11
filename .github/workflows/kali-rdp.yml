@@ -1,14 +1,17 @@
-name: Ubuntu Tools RDP via Tailscale
+name: Kali RDP via Tailscale (Docker)
 
 on:
   workflow_dispatch:
 
 jobs:
-  rdp:
+  kali-rdp:
     runs-on: ubuntu-latest
     timeout-minutes: 240
 
     steps:
+      # ----------------------------
+      # Free disk space
+      # ----------------------------
       - name: Free disk space
         uses: jlumbroso/free-disk-space@main
         with:
@@ -21,67 +24,100 @@ jobs:
           swap-storage: true
 
       # ----------------------------
-      # Create user first
+      # Install Docker
       # ----------------------------
-      - name: Create RDP user
-        run: |
-          PASSWORD=$(openssl rand -base64 12 | tr -dc 'A-Za-z0-9!@#$%^&*()_+' | head -c 16)
-
-          sudo adduser --gecos "" --disabled-password kaliuser
-          echo "kaliuser:$PASSWORD" | sudo chpasswd
-          sudo usermod -aG sudo kaliuser
-
-          echo "::add-mask::$PASSWORD"
-          echo "RDP_USER=kaliuser" >> $GITHUB_ENV
-          echo "RDP_PASS=$PASSWORD" >> $GITHUB_ENV
-
-      # ----------------------------
-      # Install desktop + tools
-      # ----------------------------
-      - name: Install XFCE + xRDP + security tools
+      - name: Install Docker
         run: |
           sudo apt-get update
-          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
-            xfce4 xfce4-goodies xorg dbus-x11 x11-xserver-utils \
-            xrdp \
-            nmap metasploit-framework hashcat john \
-            burpsuite aircrack-ng wireshark
-
-          # XFCE for xRDP
-          sudo sed -i 's@^exec .*@exec startxfce4@' /etc/xrdp/startwm.sh
-          sudo sed -i 's/^new_cursors=true/new_cursors=false/' /etc/xrdp/xrdp.ini || true
-
-          echo "startxfce4" | sudo tee /home/kaliuser/.xsession
-          sudo chown kaliuser:kaliuser /home/kaliuser/.xsession
-          sudo chmod +x /home/kaliuser/.xsession
-
-          sudo systemctl enable xrdp xrdp-sesman
-          sudo systemctl restart xrdp xrdp-sesman
+          sudo apt-get install -y docker.io
+          sudo systemctl start docker
+          sudo systemctl enable docker
 
       # ----------------------------
-      # Tailscale
+      # Generate RDP password
+      # ----------------------------
+      - name: Generate credentials
+        run: |
+          PASS=$(openssl rand -base64 18 | tr -dc 'A-Za-z0-9!@#$%^&*()_+' | head -c 16)
+          echo "::add-mask::$PASS"
+          echo "RDP_PASS=$PASS" >> $GITHUB_ENV
+
+      # ----------------------------
+      # Build Kali RDP image
+      # ----------------------------
+      - name: Build Kali RDP image
+        run: |
+          cat << 'EOF' > Dockerfile
+          FROM kalilinux/kali-rolling
+
+          ENV DEBIAN_FRONTEND=noninteractive
+
+          RUN apt-get update && apt-get install -y \
+              kali-linux-headless \
+              xfce4 xfce4-goodies \
+              xrdp dbus-x11 xorg sudo \
+              && rm -rf /var/lib/apt/lists/*
+
+          RUN useradd -m -s /bin/bash kaliuser \
+              && echo "kaliuser ALL=(ALL) NOPASSWD:ALL" >> /etc/sudoers
+
+          EXPOSE 3389
+
+          CMD service dbus start && \
+              service xrdp start && \
+              tail -f /var/log/xrdp.log
+          EOF
+
+          docker build -t kali-rdp .
+
+      # ----------------------------
+      # Run Kali container
+      # ----------------------------
+      - name: Start Kali container
+        run: |
+          docker run -d \
+            --name kali-rdp \
+            -p 127.0.0.1:3389:3389 \
+            kali-rdp
+
+      # ----------------------------
+      # Set password inside container
+      # ----------------------------
+      - name: Set RDP password
+        run: |
+          docker exec kali-rdp bash -c "echo 'kaliuser:${RDP_PASS}' | chpasswd"
+
+      # ----------------------------
+      # Connect to Tailscale
       # ----------------------------
       - name: Connect to Tailscale
         uses: tailscale/github-action@v4
         with:
           oauth-client-id: ${{ secrets.TS_OAUTH_CLIENT_ID }}
           oauth-secret: ${{ secrets.TS_OAUTH_SECRET }}
-          tags: tag:github-rdp
-          args: --hostname=gh-rdp-${{ github.run_id }}
+          tags: tag:github-kali
+          args: --hostname=gh-kali-${{ github.run_id }}
 
-      - name: Show info
+      # ----------------------------
+      # Show connection info
+      # ----------------------------
+      - name: Show connection details
         run: |
           TS_IP=$(tailscale ip -4)
+
           echo ""
-          echo "=== RDP ACCESS ==="
+          echo "=============================="
+          echo "   REAL KALI RDP IS READY"
+          echo "=============================="
           echo "Address : $TS_IP"
-          echo "Username: ${{ env.RDP_USER }}"
+          echo "Port    : 3389"
+          echo "Username: kaliuser"
           echo "Password: (hidden in logs)"
           echo "Desktop : XFCE"
-          echo "==============="
+          echo "=============================="
           echo ""
 
           while true; do
-            echo "[$(date)] Session active"
+            echo "[$(date)] Kali RDP active"
             sleep 300
           done
