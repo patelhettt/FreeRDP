@@ -5,113 +5,108 @@ on:
 
 jobs:
   secure-rdp:
-    runs-on: windows-latest
+    runs-on: ubuntu-latest
     timeout-minutes: 360
 
     steps:
       # ----------------------------
-      # Enable RDP safely
+      # Enable RDP safely (Linux)
       # ----------------------------
       - name: Configure RDP
         run: |
-          # Enable RDP (keep NLA ON for security)
-          Set-ItemProperty `
-            -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server' `
-            -Name "fDenyTSConnections" -Value 0 -Force
+          sudo apt-get update
+          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y \
+            xrdp xfce4 xfce4-goodies dbus-x11 xorg
 
-          # Firewall rule for RDP (Tailscale will protect access)
-          netsh advfirewall firewall delete rule name="RDP-Tailscale" 2>$null
-          netsh advfirewall firewall add rule name="RDP-Tailscale" `
-            dir=in action=allow protocol=TCP localport=3389
+          # Set XFCE as default session for xRDP
+          sudo sed -i 's@^exec .*@exec startxfce4@' /etc/xrdp/startwm.sh
+          sudo sed -i 's/^new_cursors=true/new_cursors=false/' /etc/xrdp/xrdp.ini || true
 
-          Restart-Service -Name TermService -Force
+          sudo systemctl enable xrdp
+          sudo systemctl restart xrdp
 
       # ----------------------------
-      # Create RDP user
+      # Create RDP user (same logic, Linux)
       # ----------------------------
       - name: Create RDP User
         run: |
-          Add-Type -AssemblyName System.Security
+          # Same idea as your Windows script: strong random password
+          CHARS='ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz23456789!@#$%^&*'
+          PASSWORD=$(echo "$CHARS" | fold -w1 | shuf | head -n16 | tr -d '\n')
 
-          $chars = "ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz23456789!@#$%^&*"
-          $password = -join (1..16 | ForEach-Object { $chars | Get-Random -Count 1 })
+          sudo useradd -m -s /bin/bash RDP || true
+          echo "RDP:$PASSWORD" | sudo chpasswd
+          sudo usermod -aG sudo RDP
 
-          $securePass = ConvertTo-SecureString $password -AsPlainText -Force
+          # Mask password in logs (same behavior as before)
+          echo "::add-mask::$PASSWORD"
 
-          New-LocalUser -Name "RDP" -Password $securePass -AccountNeverExpires
-          Add-LocalGroupMember -Group "Administrators" -Member "RDP"
-          Add-LocalGroupMember -Group "Remote Desktop Users" -Member "RDP"
+          echo "RDP_USER=RDP" >> $GITHUB_ENV
+          echo "RDP_PASS=$PASSWORD" >> $GITHUB_ENV
 
-          # Mask password in logs
-          Write-Host "::add-mask::$password"
-
-          echo "RDP_USER=RDP" >> $env:GITHUB_ENV
-          echo "RDP_PASS=$password" >> $env:GITHUB_ENV
+          # User session file for xRDP
+          echo "startxfce4" | sudo tee /home/RDP/.xsession
+          sudo chown RDP:RDP /home/RDP/.xsession
+          sudo chmod +x /home/RDP/.xsession
 
       # ----------------------------
       # Install Tailscale
       # ----------------------------
       - name: Install Tailscale
         run: |
-          $tsUrl = "https://pkgs.tailscale.com/stable/tailscale-setup-1.90.4-amd64.msi"
-          $installerPath = "$env:TEMP\tailscale.msi"
-
-          Invoke-WebRequest -Uri $tsUrl -OutFile $installerPath
-          Start-Process msiexec.exe -ArgumentList "/i", "`"$installerPath`"", "/quiet", "/norestart" -Wait
-          Remove-Item $installerPath -Force
+          curl -fsSL https://tailscale.com/install.sh | sh
 
       # ----------------------------
       # Connect to Tailscale (AUTH KEY)
       # ----------------------------
       - name: Connect to Tailscale
         run: |
-          & "$env:ProgramFiles\Tailscale\tailscale.exe" up `
-            --authkey=${{ secrets.TAILSCALE_AUTH_KEY }} `
-            --hostname=gh-win-${{ github.run_id }}
+          sudo tailscale up \
+            --authkey=${{ secrets.TAILSCALE_AUTH_KEY }} \
+            --hostname=gh-linux-${{ github.run_id }}
 
           # Wait for IP
-          $tsIP = $null
-          for ($i=0; $i -lt 10; $i++) {
-            $tsIP = & "$env:ProgramFiles\Tailscale\tailscale.exe" ip -4
-            if ($tsIP) { break }
-            Start-Sleep -Seconds 5
-          }
+          TS_IP=""
+          for i in {1..10}; do
+            TS_IP=$(tailscale ip -4)
+            [ -n "$TS_IP" ] && break
+            sleep 5
+          done
 
-          if (-not $tsIP) {
-            Write-Error "Tailscale IP not assigned"
+          if [ -z "$TS_IP" ]; then
+            echo "Tailscale IP not assigned"
             exit 1
-          }
+          fi
 
-          echo "TAILSCALE_IP=$tsIP" >> $env:GITHUB_ENV
+          echo "TAILSCALE_IP=$TS_IP" >> $GITHUB_ENV
 
       # ----------------------------
       # Verify RDP
       # ----------------------------
       - name: Verify RDP
         run: |
-          Write-Host "Tailscale IP: $env:TAILSCALE_IP"
+          echo "Tailscale IP: $TAILSCALE_IP"
 
-          $test = Test-NetConnection -ComputerName $env:TAILSCALE_IP -Port 3389
-          if (-not $test.TcpTestSucceeded) {
-            Write-Error "RDP port not reachable"
+          if ! ss -tuln | grep -q ':3389'; then
+            echo "RDP service not listening on port 3389"
             exit 1
-          }
+          fi
 
       # ----------------------------
       # Show access info (NO password leak)
       # ----------------------------
       - name: Show connection info
         run: |
-          Write-Host ""
-          Write-Host "===== WINDOWS RDP READY ====="
-          Write-Host "Address : $env:TAILSCALE_IP"
-          Write-Host "Username: $env:RDP_USER"
-          Write-Host "Password: (hidden in logs)"
-          Write-Host "============================="
-          Write-Host ""
+          echo ""
+          echo "===== LINUX RDP READY ====="
+          echo "Address : $TAILSCALE_IP"
+          echo "Username: $RDP_USER"
+          echo "Password: (hidden in logs)"
+          echo "=========================="
+          echo ""
 
           # Keep alive for 1 hour max
-          for ($i=0; $i -lt 12; $i++) {
-            Write-Host "[$(Get-Date)] RDP active"
-            Start-Sleep -Seconds 300
-          }
+          for i in {1..12}; do
+            echo "[$(date)] RDP active"
+            sleep 300
+          done
