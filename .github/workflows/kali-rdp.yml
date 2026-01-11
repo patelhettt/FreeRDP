@@ -1,18 +1,15 @@
-name: Kali Tools RDP via Tailscale
+name: Ubuntu Tools RDP via Tailscale
 
 on:
   workflow_dispatch:
 
 jobs:
-  kali-rdp:
+  rdp:
     runs-on: ubuntu-latest
     timeout-minutes: 240
 
     steps:
-      # ----------------------------
-      # Free disk space
-      # ----------------------------
-      - name: Maximize disk space
+      - name: Free disk space
         uses: jlumbroso/free-disk-space@main
         with:
           large-packages: true
@@ -24,20 +21,7 @@ jobs:
           swap-storage: true
 
       # ----------------------------
-      # Add Kali repo
-      # ----------------------------
-      - name: Add Kali repositories
-        run: |
-          sudo apt-get update
-          wget -q -O - https://archive.kali.org/archive-key.asc \
-            | gpg --dearmor \
-            | sudo tee /usr/share/keyrings/kali-archive-keyring.gpg >/dev/null
-          echo "deb [signed-by=/usr/share/keyrings/kali-archive-keyring.gpg] http://http.kali.org/kali kali-rolling main non-free contrib" \
-            | sudo tee /etc/apt/sources.list.d/kali.list
-          sudo apt-get update
-
-      # ----------------------------
-      # Create RDP user FIRST
+      # Create user first
       # ----------------------------
       - name: Create RDP user
         run: |
@@ -47,73 +31,54 @@ jobs:
           echo "kaliuser:$PASSWORD" | sudo chpasswd
           sudo usermod -aG sudo kaliuser
 
-          # Mask password so it never appears in logs
           echo "::add-mask::$PASSWORD"
-
           echo "RDP_USER=kaliuser" >> $GITHUB_ENV
           echo "RDP_PASS=$PASSWORD" >> $GITHUB_ENV
 
       # ----------------------------
       # Install desktop + tools
       # ----------------------------
-      - name: Install XFCE + xRDP + Kali tools
+      - name: Install XFCE + xRDP + security tools
         run: |
+          sudo apt-get update
           sudo DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
             xfce4 xfce4-goodies xorg dbus-x11 x11-xserver-utils \
             xrdp \
-            kali-linux-headless \
-            metasploit-framework nmap hashcat john burpsuite aircrack-ng
+            nmap metasploit-framework hashcat john \
+            burpsuite aircrack-ng wireshark
 
-          # Set XFCE as default session for xRDP
+          # XFCE for xRDP
           sudo sed -i 's@^exec .*@exec startxfce4@' /etc/xrdp/startwm.sh
-
-          # Cursor fix (harmless if option missing)
           sudo sed -i 's/^new_cursors=true/new_cursors=false/' /etc/xrdp/xrdp.ini || true
 
-          # User session file
           echo "startxfce4" | sudo tee /home/kaliuser/.xsession
           sudo chown kaliuser:kaliuser /home/kaliuser/.xsession
           sudo chmod +x /home/kaliuser/.xsession
 
-          # Enable services
           sudo systemctl enable xrdp xrdp-sesman
           sudo systemctl restart xrdp xrdp-sesman
-          sudo systemctl status xrdp xrdp-sesman --no-pager || true
 
       # ----------------------------
-      # Connect to Tailscale
+      # Tailscale
       # ----------------------------
       - name: Connect to Tailscale
         uses: tailscale/github-action@v4
         with:
           oauth-client-id: ${{ secrets.TS_OAUTH_CLIENT_ID }}
           oauth-secret: ${{ secrets.TS_OAUTH_SECRET }}
-          tags: tag:github-kali
-          args: --hostname=gh-kali-${{ github.run_id }}
+          tags: tag:github-rdp
+          args: --hostname=gh-rdp-${{ github.run_id }}
 
-      # ----------------------------
-      # Get IP + verify RDP
-      # ----------------------------
-      - name: Get Tailscale IP & verify
+      - name: Show info
         run: |
           TS_IP=$(tailscale ip -4)
-          echo "TAILSCALE_IP=$TS_IP" >> $GITHUB_ENV
-          echo "Tailscale IP: $TS_IP"
-
-          sudo ss -tuln | grep 3389 || echo "Warning: RDP not listening yet"
-
-      # ----------------------------
-      # Show info + keep alive
-      # ----------------------------
-      - name: Show connection details
-        run: |
           echo ""
-          echo "=== KALI RDP ACCESS ==="
-          echo "Address : ${{ env.TAILSCALE_IP }}"
+          echo "=== RDP ACCESS ==="
+          echo "Address : $TS_IP"
           echo "Username: ${{ env.RDP_USER }}"
           echo "Password: (hidden in logs)"
           echo "Desktop : XFCE"
-          echo "======================"
+          echo "==============="
           echo ""
 
           while true; do
